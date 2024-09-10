@@ -26,6 +26,37 @@ class RunTaskJob extends Job implements ShouldQueue
     use InteractsWithQueue;
     use SerializesModels;
 
+    private const PROC_PATH = '/proc/';
+
+    // Can probably convert these 2 or 3 (^) constants
+    //   into optional .env entries but for now... constants
+    //     potentially timeout as well
+
+    /**
+     * How often to poll for changes (in microseconds)
+     * Default is 1,000,000 or 1 second
+     * (For convenience, I use milli and convert to micro)
+     */
+    private const POLLING_FREQUENCY = 1000 * 1000;
+    /**
+     * How long (in seconds) to block
+     *   for to acquire the power lock
+     */
+    private const POWER_LOCK_ACQUIRE_TIME = 5;
+
+    /**
+     * The number of seconds the job can run before timing out.
+     *
+     * Arbitrary 10 minute timeout in case it gets stuck
+     *   for whatever reason due to the periodic pulling
+     * If your schedules needs longer (probably due to backups)
+     *   then just up this variable to the desired amount of time
+     *   not perfect but better than hanging forever
+     *
+     * @var int
+     */
+    public $timeout = 600;
+
     /**
      * RunTaskJob constructor.
      */
@@ -78,44 +109,13 @@ class RunTaskJob extends Job implements ShouldQueue
         try {
             switch ($action) {
                 case Task::ACTION_POWER:
-                    // Check if lock exists and if process is still running
-                    //  to account for weird cases where lock is not released
-                    //  by previous process
-                    $cacheClient = Cache::getStore();
-
-                    // Based off of this https://stackoverflow.com/a/76867663/12005894
-                    //  not sure why redis store in specific has a lock connection
-                    //  couldn't find anything online about it but hopefully this
-                    //  should mean it will work with and without redis
-                    //
-                    //  I only test with redis as cache though
-                    if ($cacheClient instanceof RedisStore) $cacheClient = $cacheClient->lockConnection()->client();
-
-                    $cacheKey = Cache::getPrefix() . $uuid;
-                    $previousOwnerEntry = $cacheClient->get($cacheKey);
-
-                    if ($previousOwnerEntry) {
-                        $previousOwner = explode('-', $previousOwnerEntry);
-                        $previousPid = $previousOwner[0];
-                        $previousPidModifiedTime = $previousOwner[1];
-
-                        // Can't think of a better name
-                        $currentPreviousPidModifiedTime = filemtime("/proc/$previousPid");
-
-                        // Can't get creation time on unix so not quite sure if this is good enough
-                        //  all depends on when linux modifies the pid file of which I don't know the extent of
-                        // Also added the modified time because PIDs are re-used so false positives could occur without it
-                        if (!$currentPreviousPidModifiedTime
-                            || $currentPreviousPidModifiedTime != $previousPidModifiedTime) {
-                            $cacheClient->forget($cacheKey);
-                        }
-                    }
+                    $this->cleanUpNotProperlyReleasedLock($uuid);
 
                     $pid = getmypid();
-                    $pidModifiedTime = filemtime("/proc/$pid");
+                    $pidModifiedTime = filemtime(self::PROC_PATH . $pid);
                     $powerLock = Cache::lock($uuid, 0, "$pid-$pidModifiedTime");
                     // Not sure what time is reasonable to wait for the lock to acquire
-                    $powerLock->block(5);
+                    $powerLock->block(self::POWER_LOCK_ACQUIRE_TIME);
 
                     Log::channel('job')->info('[RunTaskJob] Lock was locked', ['server' => $uuid, 'lock' => $powerLock]);
 
@@ -132,18 +132,10 @@ class RunTaskJob extends Job implements ShouldQueue
                             $state = "running";
                     }
 
-                    $seconds = 0;
                     $actualState = Arr::get($serverRepository->setServer($server)->getDetails(), 'state', 'stopped');
-                    while ($actualState != $state
-                        // Arbitrary 10 minute timeout in case it gets stuck for whatever reason
-                        //  do need to test what happens with cron and laravel if the process drags
-                        //  on too long, does it run 2 schedule:process commands at once leading to
-                        //  mayhem or... does cron or laravel only allow 1 at a time, I'd hope one
-                        //  of the same command at a time
-                        && $seconds < 600) {
+                    while ($actualState != $state) {
                         Log::channel('job')->info("[RunTaskJob] Payload: $payload, state: $state, status:", ['server' => $uuid, 'state' => $actualState]);
-                        sleep(1);
-                        $seconds++;
+                        usleep(self::POLLING_FREQUENCY);
                         $actualState = Arr::get($serverRepository->setServer($server)->getDetails(), 'state', 'stopped');
                     }
 
@@ -161,10 +153,8 @@ class RunTaskJob extends Job implements ShouldQueue
 
                     // 2 backups in 600 seconds will cause the task to fail
 
-                    $seconds = 0;
-                    while ($backup->refresh()->completed_at == null && $seconds < 600) {
-                        sleep(1);
-                        $seconds++;
+                    while ($backup->refresh()->completed_at == null) {
+                        usleep(self::POLLING_FREQUENCY);
                     }
                     break;
                 default:
@@ -248,5 +238,54 @@ class RunTaskJob extends Job implements ShouldQueue
     private function markTaskNotQueued()
     {
         $this->task->update(['is_queued' => false]);
+    }
+
+    /**
+     * Check if lock exists and if process is still running to account
+     *   for weird cases where lock is not released by previous process
+     *
+     * @throws \RedisException
+     */
+    private function cleanUpNotProperlyReleasedLock(string $uuid)
+    {
+        $cacheClient = Cache::getStore();
+
+        // Based off of this https://stackoverflow.com/a/76867663/12005894
+        //  not sure why redis store in specific has a lock connection
+        //  couldn't find anything online about it but hopefully this
+        //  should mean it will work with and without redis
+        //
+        //  I only test with redis as cache though
+        if ($cacheClient instanceof RedisStore) $cacheClient = $cacheClient->lockConnection()->client();
+
+        $cacheKey = Cache::getPrefix() . $uuid;
+        $previousOwnerEntry = $cacheClient->get($cacheKey);
+
+        if (!$previousOwnerEntry) {
+            return;
+        }
+
+        $previousOwner = explode('-', $previousOwnerEntry);
+        $previousPid = $previousOwner[0];
+        $previousPidModifiedTime = $previousOwner[1];
+
+        $previousProcPath = self::PROC_PATH . $previousPid;
+        $previousProcExists = file_exists($previousProcPath);
+
+        if (!$previousProcExists) {
+            $cacheClient->forget($cacheKey);
+            return;
+        }
+
+        // Can't think of a better name
+        $currentPreviousPidModifiedTime = filemtime($previousProcPath);
+
+        // Can't get creation time on unix so not quite sure if this is good enough
+        //  all depends on when linux modifies the pid file of which I don't know the extent of
+        // Also added the modified time because PIDs are re-used so false positives could occur without it
+        if (!$currentPreviousPidModifiedTime
+            || $currentPreviousPidModifiedTime != $previousPidModifiedTime) {
+            $cacheClient->forget($cacheKey);
+        }
     }
 }
