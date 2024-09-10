@@ -272,6 +272,9 @@ class RunTaskJob extends Job implements ShouldQueue
         $previousProcPath = self::PROC_PATH . $previousPid;
         $previousProcExists = file_exists($previousProcPath);
 
+        // This was needed as filemtime seemed to actually throw an
+        //   error if it could not find the file instead
+        //   of just returning false
         if (!$previousProcExists) {
             $cacheClient->forget($cacheKey);
             return;
