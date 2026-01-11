@@ -4,6 +4,7 @@ namespace Pterodactyl\Jobs\Schedule;
 
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Log;
+use Exception;
 use Pterodactyl\Jobs\Job;
 use Carbon\CarbonImmutable;
 use Pterodactyl\Models\Task;
@@ -46,7 +47,7 @@ class RunTaskJob extends Job implements ShouldQueue
         DaemonServerRepository $serverRepository,
         DaemonCommandRepository $commandRepository,
         InitiateBackupService $backupService,
-        DaemonPowerRepository $powerRepository
+        DaemonPowerRepository $powerRepository,
     ) {
         $task = $this->task;
 
@@ -132,7 +133,7 @@ class RunTaskJob extends Job implements ShouldQueue
     /**
      * Handle a failure while sending the action to the daemon or otherwise processing the job.
      */
-    public function failed(\Exception $exception = null)
+    public function failed(?\Exception $exception = null)
     {
         $this->markTaskNotQueued();
         $this->markScheduleComplete();
@@ -145,7 +146,7 @@ class RunTaskJob extends Job implements ShouldQueue
     {
         $task = $this->task;
 
-        /** @var \Pterodactyl\Models\Task|null $nextTask */
+        /** @var Task|null $nextTask */
         $nextTask = Task::query()->where('schedule_id', $task->schedule_id)
             ->orderBy('sequence_id', 'asc')
             ->where('sequence_id', '>', $task->sequence_id)
