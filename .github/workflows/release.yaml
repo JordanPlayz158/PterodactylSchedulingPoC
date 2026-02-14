@@ -19,13 +19,15 @@ jobs:
       - run: yarn tsc
       - run: yarn build:production
       - name: create release branch and bump version
+        env:
+          VERSION: ${{ github.ref_name }}
         run: |
-          BRANCH=release/${{ github.ref_name }}
+          BRANCH=release/${{ env.VERSION }}
           git config --local user.email 'ci@pterodactyl.io'
           git config --local user.name 'Pterodactyl CI'
           git checkout -b "$BRANCH"
           git push -u origin "$BRANCH"
-          sed -i "s/'canary'/'${{ github.ref_name }}'/" config/app.php
+          sed -i "s/'canary'/'${VERSION:1}'/" config/app.php
           git add config/app.php
           git commit -m 'ci(release): bump version'
           git push

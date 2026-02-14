@@ -2,13 +2,22 @@
 
 namespace Pterodactyl\Jobs\Schedule;
 
+<<<<<<< HEAD
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Log;
+use Exception;
+use Pterodactyl\Jobs\Job;
+=======
+>>>>>>> upstream/release/v1.12.1
 use Carbon\CarbonImmutable;
 use Pterodactyl\Models\Task;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
+<<<<<<< HEAD
+use Illuminate\Foundation\Bus\DispatchesJobs;
 use Pterodactyl\Repositories\Wings\DaemonServerRepository;
+=======
+>>>>>>> upstream/release/v1.12.1
 use Pterodactyl\Services\Backups\InitiateBackupService;
 use Pterodactyl\Repositories\Wings\DaemonPowerRepository;
 use Pterodactyl\Repositories\Wings\DaemonCommandRepository;
