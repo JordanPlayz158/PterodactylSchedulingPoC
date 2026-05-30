@@ -162,7 +162,7 @@ class RunTaskJob implements ShouldQueue
 
         $nextTask->update(['is_queued' => true]);
 
-        self::dispatch($nextTask, $this->manualRun)->delay($nextTask->time_offset);
+        $this->dispatch((new self($nextTask, $this->manualRun))->delay($nextTask->time_offset));
     }
 
     /**
